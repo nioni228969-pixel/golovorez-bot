@@ -2,14 +2,9 @@ import os
 import json
 import random
 import string
-import threading
 from datetime import datetime, timedelta
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from flask import Flask, request
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ADMIN_ID = "5495324356"  # ЗАМЕНИТЕ НА ВАШ TELEGRAM ID!
 app = Flask(__name__)
 KEYS_FILE = "licenses.json"
 
@@ -26,92 +21,74 @@ def save_keys(keys):
 def generate_key():
     return '-'.join([''.join(random.choices(string.ascii_uppercase + string.digits, k=5)) for _ in range(3)])
 
-def create_key(days=30, note=""):
-    keys = load_keys()
-    key = generate_key()
-    keys[key] = {
-        "expires": (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d"),
-        "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "activated": False,
-        "hwid": None,
-        "note": note,
-        "active": True
-    }
-    save_keys(keys)
-    return key
+@app.route('/')
+@app.route('/health')
+def health():
+    return "OK", 200
 
-def check_key(key, hwid):
+@app.route('/check')
+def check():
+    key = request.args.get('key', '')
+    hwid = request.args.get('hwid', '')
+    
     keys = load_keys()
     if key not in keys:
         return "INVALID"
+    
     data = keys[key]
-    if not data.get("active", True):
-        return "BANNED"
     if datetime.now().strftime("%Y-%m-%d") > data["expires"]:
         return "EXPIRED"
-    if data["hwid"] is None:
+    
+    if data.get("hwid") is None:
         data["hwid"] = hwid
-        data["activated"] = True
         data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_keys(keys)
         return "VALID"
-    elif data["hwid"] == hwid:
+    elif data.get("hwid") == hwid:
         return "VALID"
     else:
         return "WRONG_HWID"
 
-async def start(update: Update, context):
-    chat_id = str(update.effective_chat.id)
-    await update.message.reply_text(
-        "🤖 Golovorez License Bot\n\n"
-        "/new 30 Имя - создать ключ\n"
-        "/keys - список ключей"
-    )
+@app.route('/create')
+def create():
+    days = request.args.get('days', 30)
+    key = generate_key()
+    keys = load_keys()
+    keys[key] = {
+        "expires": (datetime.now() + timedelta(days=int(days))).strftime("%Y-%m-%d"),
+        "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "hwid": None
+    }
+    save_keys(keys)
+    return f"✅ Ключ создан: {key}\nДействует {days} дней"
 
-async def new_key(update: Update, context):
-    if str(update.effective_chat.id) != ADMIN_ID:
-        await update.message.reply_text("❌ Нет прав!")
-        return
-    days = 30
-    if context.args and len(context.args) > 0:
-        try:
-            days = int(context.args[0])
-        except:
-            days = 30
-    key = create_key(days, " ".join(context.args[1:]) if len(context.args) > 1 else "")
-    await update.message.reply_text(f"✅ Новый ключ: `{key}`\nДействует {days} дней", parse_mode='Markdown')
-
-async def list_keys(update: Update, context):
-    if str(update.effective_chat.id) != ADMIN_ID:
-        await update.message.reply_text("❌ Нет прав!")
-        return
+@app.route('/keys')
+def list_keys():
     keys = load_keys()
     if not keys:
-        await update.message.reply_text("Нет ключей")
-        return
-    msg = "📋 Список ключей:\n\n"
+        return "Нет ключей"
+    result = "📋 Список ключей:\n"
     for k, v in keys.items():
-        status = "✅" if v.get("activated") else "⭕"
-        msg += f"{status} {k} - до {v['expires']}\n"
-    await update.message.reply_text(msg)
+        status = "✅" if v.get("hwid") else "⭕"
+        result += f"{status} {k} - до {v['expires']}\n"
+    return result
 
-application = Application.builder().token(TOKEN).build()
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("new", new_key))
-application.add_handler(CommandHandler("keys", list_keys))
-
-def run_bot():
-    print("🤖 Бот запущен!")
-    application.run_polling()
-
-@app.route('/')
-@app.route('/health')
-def health():
-    return "Bot is running", 200
-
-bot_thread = threading.Thread(target=run_bot)
-bot_thread.start()
+@app.route('/info')
+def info():
+    key = request.args.get('key', '')
+    keys = load_keys()
+    if key not in keys:
+        return f"❌ Ключ {key} не найден"
+    v = keys[key]
+    return f"""
+🔑 Ключ: {key}
+📅 Создан: {v['created']}
+⏰ Истекает: {v['expires']}
+🔓 Активирован: {'✅ Да' if v.get('hwid') else '❌ Нет'}
+💻 HWID: {v.get('hwid', 'Не привязан')[:30] if v.get('hwid') else 'Не привязан'}
+"""
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Бот запущен на порту {port}")
     app.run(host="0.0.0.0", port=port)
