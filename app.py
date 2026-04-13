@@ -6,7 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -85,141 +85,127 @@ def check():
     else:
         return "WRONG_HWID"
 
-@app.route('/create')
-def api_create():
-    days = int(request.args.get('days', 30))
-    key = create_key(days)
-    return key
+# ========== TELEGRAM БОТ (старая версия библиотеки) ==========
+def start(update, context):
+    chat_id = str(update.effective_chat.id)
+    
+    if chat_id != ADMIN_ID:
+        update.message.reply_text("❌ Нет доступа")
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton("🔑 Создать ключ", callback_data="create_key")],
+        [InlineKeyboardButton("📋 Список ключей", callback_data="list_keys")],
+        [InlineKeyboardButton("🔄 Сброс HWID", callback_data="reset_hwid")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text(
+        "🤖 **Golovorez License Bot**\n\nВыберите действие:",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
 
-@app.route('/keys')
-def api_keys():
-    keys = load_keys()
-    return json.dumps(keys)
+def button_callback(update, context):
+    query = update.callback_query
+    query.answer()
+    chat_id = str(query.from_user.id)
+    
+    if chat_id != ADMIN_ID:
+        query.edit_message_text("❌ Нет доступа!")
+        return
+    
+    # Меню создания ключа
+    if query.data == "create_key":
+        keyboard = [
+            [InlineKeyboardButton("📅 1 день", callback_data="days_1")],
+            [InlineKeyboardButton("📅 7 дней", callback_data="days_7")],
+            [InlineKeyboardButton("📅 15 дней", callback_data="days_15")],
+            [InlineKeyboardButton("📅 30 дней", callback_data="days_30")],
+            [InlineKeyboardButton("⭐ НАВСЕГДА", callback_data="days_0")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+        ]
+        query.edit_message_text(
+            "🔑 **Выберите срок:**",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    # Создание ключей
+    elif query.data == "days_1":
+        key = create_key(1)
+        query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 1 день", parse_mode='Markdown')
+    elif query.data == "days_7":
+        key = create_key(7)
+        query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 7 дней", parse_mode='Markdown')
+    elif query.data == "days_15":
+        key = create_key(15)
+        query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 15 дней", parse_mode='Markdown')
+    elif query.data == "days_30":
+        key = create_key(30)
+        query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 30 дней", parse_mode='Markdown')
+    elif query.data == "days_0":
+        key = create_key(0)
+        query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n⭐ Действует: НАВСЕГДА", parse_mode='Markdown')
+    
+    # Список ключей
+    elif query.data == "list_keys":
+        keys = load_keys()
+        if not keys:
+            query.edit_message_text("📭 Нет ключей")
+            return
+        msg = "📋 **Список ключей:**\n\n"
+        for k, v in keys.items():
+            expiry = "⭐ НАВСЕГДА" if v["expires"] == "never" else f"до {v['expires']}"
+            status = "✅" if v.get("hwid") else "⭕"
+            msg += f"{status} `{k}` - {expiry}\n"
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+        query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    # Сброс HWID
+    elif query.data == "reset_hwid":
+        keys = load_keys()
+        keyboard = []
+        for k, v in keys.items():
+            if v.get("hwid"):
+                keyboard.append([InlineKeyboardButton(f"🔄 {k}", callback_data=f"reset_{k}")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+        query.edit_message_text(
+            "🔄 **Выберите ключ для сброса:**",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif query.data.startswith("reset_"):
+        key = query.data.replace("reset_", "")
+        if reset_hwid(key):
+            query.edit_message_text(f"✅ HWID для ключа `{key}` сброшен", parse_mode='Markdown')
+        else:
+            query.edit_message_text("❌ Ключ не найден")
+    
+    elif query.data == "back":
+        keyboard = [
+            [InlineKeyboardButton("🔑 Создать ключ", callback_data="create_key")],
+            [InlineKeyboardButton("📋 Список ключей", callback_data="list_keys")],
+            [InlineKeyboardButton("🔄 Сброс HWID", callback_data="reset_hwid")],
+        ]
+        query.edit_message_text(
+            "🤖 **Golovorez License Bot**\n\nВыберите действие:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-# ========== TELEGRAM БОТ ==========
+# Запуск бота
 def run_bot():
-    """Запуск Telegram бота в отдельном потоке"""
     try:
-        # Создаём приложение
-        telegram_app = Application.builder().token(TOKEN).build()
+        updater = Updater(TOKEN, use_context=True)
+        dp = updater.dispatcher
         
-        # Обработчик команды /start
-        async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            chat_id = str(update.effective_chat.id)
-            
-            if chat_id != ADMIN_ID:
-                await update.message.reply_text("❌ Нет доступа")
-                return
-            
-            keyboard = [
-                [InlineKeyboardButton("🔑 Создать ключ", callback_data="create_key")],
-                [InlineKeyboardButton("📋 Список ключей", callback_data="list_keys")],
-                [InlineKeyboardButton("🔄 Сброс HWID", callback_data="reset_hwid")],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(
-                "🤖 **Golovorez License Bot**\n\nВыберите действие:",
-                parse_mode='Markdown',
-                reply_markup=reply_markup
-            )
-        
-        # Обработчик кнопок
-        async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            query = update.callback_query
-            await query.answer()
-            chat_id = str(query.from_user.id)
-            
-            if chat_id != ADMIN_ID:
-                await query.edit_message_text("❌ Нет доступа!")
-                return
-            
-            # Меню создания ключа
-            if query.data == "create_key":
-                keyboard = [
-                    [InlineKeyboardButton("📅 1 день", callback_data="days_1")],
-                    [InlineKeyboardButton("📅 7 дней", callback_data="days_7")],
-                    [InlineKeyboardButton("📅 15 дней", callback_data="days_15")],
-                    [InlineKeyboardButton("📅 30 дней", callback_data="days_30")],
-                    [InlineKeyboardButton("⭐ НАВСЕГДА", callback_data="days_0")],
-                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-                ]
-                await query.edit_message_text(
-                    "🔑 **Выберите срок:**",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            
-            # Создание ключей
-            elif query.data == "days_1":
-                key = create_key(1)
-                await query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 1 день", parse_mode='Markdown')
-            elif query.data == "days_7":
-                key = create_key(7)
-                await query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 7 дней", parse_mode='Markdown')
-            elif query.data == "days_15":
-                key = create_key(15)
-                await query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 15 дней", parse_mode='Markdown')
-            elif query.data == "days_30":
-                key = create_key(30)
-                await query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n📅 Действует: 30 дней", parse_mode='Markdown')
-            elif query.data == "days_0":
-                key = create_key(0)
-                await query.edit_message_text(f"✅ **Ключ создан!**\n\n🔑 `{key}`\n⭐ Действует: НАВСЕГДА", parse_mode='Markdown')
-            
-            # Список ключей
-            elif query.data == "list_keys":
-                keys = load_keys()
-                if not keys:
-                    await query.edit_message_text("📭 Нет ключей")
-                    return
-                msg = "📋 **Список ключей:**\n\n"
-                for k, v in keys.items():
-                    expiry = "⭐ НАВСЕГДА" if v["expires"] == "never" else f"до {v['expires']}"
-                    status = "✅" if v.get("hwid") else "⭕"
-                    msg += f"{status} `{k}` - {expiry}\n"
-                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
-                await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-            
-            # Сброс HWID
-            elif query.data == "reset_hwid":
-                keys = load_keys()
-                keyboard = []
-                for k, v in keys.items():
-                    if v.get("hwid"):
-                        keyboard.append([InlineKeyboardButton(f"🔄 {k}", callback_data=f"reset_{k}")])
-                keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
-                await query.edit_message_text(
-                    "🔄 **Выберите ключ для сброса:**",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-            
-            elif query.data.startswith("reset_"):
-                key = query.data.replace("reset_", "")
-                if reset_hwid(key):
-                    await query.edit_message_text(f"✅ HWID для ключа `{key}` сброшен", parse_mode='Markdown')
-                else:
-                    await query.edit_message_text("❌ Ключ не найден")
-            
-            elif query.data == "back":
-                keyboard = [
-                    [InlineKeyboardButton("🔑 Создать ключ", callback_data="create_key")],
-                    [InlineKeyboardButton("📋 Список ключей", callback_data="list_keys")],
-                    [InlineKeyboardButton("🔄 Сброс HWID", callback_data="reset_hwid")],
-                ]
-                await query.edit_message_text(
-                    "🤖 **Golovorez License Bot**\n\nВыберите действие:",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-        
-        # Регистрируем обработчики
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CallbackQueryHandler(button_callback))
+        dp.add_handler(CommandHandler("start", start))
+        dp.add_handler(CallbackQueryHandler(button_callback))
         
         print("🤖 Telegram бот запущен!")
-        telegram_app.run_polling()
-        
+        updater.start_polling()
+        updater.idle()
     except Exception as e:
         print(f"❌ Ошибка бота: {e}")
 
