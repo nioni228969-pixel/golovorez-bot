@@ -5,7 +5,7 @@ import string
 import threading
 from datetime import datetime, timedelta
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
 
 # ========== НАСТРОЙКИ ==========
@@ -85,7 +85,21 @@ def check():
     else:
         return "WRONG_HWID"
 
-# ========== TELEGRAM БОТ (старая версия библиотеки) ==========
+@app.route('/create')
+def api_create():
+    days = int(request.args.get('days', 30))
+    key = create_key(days)
+    return key
+
+@app.route('/keys')
+def api_keys():
+    keys = load_keys()
+    result = []
+    for k, v in keys.items():
+        result.append(f"{k}: {v['expires']}")
+    return "\n".join(result)
+
+# ========== TELEGRAM БОТ ==========
 def start(update, context):
     chat_id = str(update.effective_chat.id)
     
@@ -197,7 +211,7 @@ def button_callback(update, context):
 # Запуск бота
 def run_bot():
     try:
-        updater = Updater(TOKEN, use_context=True)
+        updater = Updater(TOKEN)
         dp = updater.dispatcher
         
         dp.add_handler(CommandHandler("start", start))
