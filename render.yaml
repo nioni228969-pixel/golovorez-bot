@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: golovorez-bot
-    runtime: python
-    buildCommand: pip install -r requirements.txt
+    name: telegram-bot
+    env: python
+    buildCommand: ""
     startCommand: python app.py
     envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.9
